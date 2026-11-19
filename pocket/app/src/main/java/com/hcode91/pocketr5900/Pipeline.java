@@ -275,22 +275,27 @@ final class Pipeline {
                     return null;
                 }));
             }
+            IOException other = null;
             for (Future<?> f : futures) {
                 try {
                     f.get();
                 } catch (java.util.concurrent.ExecutionException e) {
+                    // Once one file has failed the other jobs are stopped, and the
+                    // stop itself shows up as errors here: keep the real failure.
                     Throwable c = e.getCause();
-                    if (c instanceof Toolchain.Cancelled && failure[0] != null) {
-                        continue;
+                    if (other == null && !(c instanceof Toolchain.Cancelled)) {
+                        other = c instanceof IOException ? (IOException) c : new IOException(String.valueOf(c));
                     }
-                    if (c instanceof IOException) {
-                        throw (IOException) c;
-                    }
-                    throw new IOException(String.valueOf(c));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new Toolchain.Cancelled();
                 }
+            }
+            if (failure[0] != null) {
+                throw failure[0];
+            }
+            if (other != null && !tc.isCancelled()) {
+                throw other;
             }
         } finally {
             pool.shutdownNow();
@@ -385,12 +390,18 @@ final class Pipeline {
     private File precompileHeader(String opt) throws IOException {
         File header = new File(game.work(), "pocket_pch.h");
         File pch = new File(game.work(), "pocket_pch-" + opt.substring(1) + ".pch");
-        if (pch.isFile() && pch.length() > 0) {
-            return pch;
-        }
         String text = "#pragma once\n#include <stdexcept>\n#include \"ps2_runtime_macros.h\"\n#include \"ps2_runtime.h\"\n"
                 + "#include \"ps2_syscalls.h\"\n#include \"ps2_stubs.h\"\n";
-        Files.write(header.toPath(), text.getBytes(StandardCharsets.UTF_8));
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        // Only rewrite the header when it changes: clang rejects a precompiled
+        // header whose source file has a newer date than it.
+        if (!header.isFile() || !java.util.Arrays.equals(Files.readAllBytes(header.toPath()), bytes)) {
+            Files.write(header.toPath(), bytes);
+        }
+        // Always build it fresh for this compile step; an old one (from an earlier
+        // conversion or app version) may no longer match the header or the SDK.
+        //noinspection ResultOfMethodCallIgnored
+        pch.delete();
         List<String> cmd = compileCommand(opt, null);
         cmd.addAll(Arrays.asList("-x", "c++-header", header.getAbsolutePath(), "-o", pch.getAbsolutePath()));
         status("Preparing the compiler", -1);
