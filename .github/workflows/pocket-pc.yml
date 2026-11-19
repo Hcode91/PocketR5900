@@ -8,7 +8,7 @@ name: PocketR5900 - PC converter
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, pocket/android-tools]
     paths:
       - "pocket/pc/**"
       - "pocket/scripts/make_sdk_pack.sh"
