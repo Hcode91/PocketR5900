@@ -53,7 +53,7 @@ cp "$RT/ps2xRuntime/CMakeFiles/ps2EntryRunner.dir/src/main.cpp.o" "$S/lib/main.o
 STRIP="$PRE/bin/llvm-strip"
 "$STRIP" --strip-debug "$S"/lib/*.a "$S/lib/main.o"
 
-echo "pocketr5900-sdk-1" > "$S/VERSION"
+echo "pocketr5900-sdk-2" > "$S/VERSION"
 mkdir -p "$(dirname "$OUTZIP")"
 rm -f "$OUTZIP"
 cp "$S/VERSION" "$(dirname "$OUTZIP")/sdk.version"
