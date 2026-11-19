@@ -213,6 +213,59 @@ namespace
         return end;
     }
 
+    // Words that can never be an R5900 (EE) instruction. Data placed in a code
+    // section (VU microcode, float constants, strings) shows up as these.
+    bool IsClearlyNotR5900Code(uint32_t word)
+    {
+        const uint32_t op = word >> 26;
+        switch (op)
+        {
+        case 0x13: // COP3
+        case 0x1D: // JALX
+        case 0x30: // LL
+        case 0x32: // LWC2
+        case 0x34: // LLD
+        case 0x35: // LDC1
+        case 0x38: // SC
+        case 0x3A: // SWC2
+        case 0x3B:
+        case 0x3C: // SCD
+        case 0x3D: // SDC1
+            return true;
+        case 0x00:
+            switch (word & 0x3F)
+            {
+            case 0x01: case 0x05: case 0x0E: case 0x15:
+            case 0x1C: case 0x1D: case 0x1E: case 0x1F:
+            case 0x35: case 0x37: case 0x39: case 0x3D:
+                return true;
+            default:
+                return false;
+            }
+        default:
+            return false;
+        }
+    }
+
+    // jr (return or tail jump), j, or an unconditional b (beq $0, $0).
+    bool IsUnconditionalExit(uint32_t word)
+    {
+        const uint32_t op = word >> 26;
+        if (op == 0x00 && (word & 0x3F) == 0x08)
+            return true;
+        if (op == 0x02)
+            return true;
+        if (op == 0x04 && ((word >> 21) & 31) == 0 && ((word >> 16) & 31) == 0)
+            return true;
+        return false;
+    }
+
+    // addiu $sp, $sp, -N: the usual start of a function with a stack frame.
+    bool IsStackFramePrologue(uint32_t word)
+    {
+        return (word >> 16) == 0x27BD && (word & 0x8000) != 0;
+    }
+
     std::string MakeAutoFunctionName(uint32_t address)
     {
         char buffer[32]{};
@@ -1157,13 +1210,33 @@ namespace
                                        bool consumedByCurrentCall,
                                        std::unordered_set<uint32_t> &starts)
     {
-        const bool materializedAsCodePointer =
+        bool materializedAsCodePointer =
             consumedByCurrentCall ||
             IsConsumedAsCodePointerInControlFlow(section,
                                                  firstUseOffset,
                                                  1u << valueReg,
                                                  regionBegin,
                                                  regionEnd);
+
+        // PocketR5900: a code address that is stored away (for example into a
+        // FILE structure's write callback) and sits exactly where a function can
+        // begin, right after an unconditional exit and its delay slot, is a
+        // function pointer even when the function is a leaf with no stack frame.
+        if (!materializedAsCodePointer)
+        {
+            const ps2recomp::Section *targetSection = FindCodeSectionByAddress(sections, target);
+            uint32_t exitRaw = 0;
+            if (targetSection && (target % MIPS_INSTRUCTION_SIZE) == 0)
+            {
+                const uint32_t targetOffset = target - targetSection->address;
+                if (targetOffset >= 2u * MIPS_INSTRUCTION_SIZE &&
+                    ReadSectionWord(*targetSection, targetOffset - 2u * MIPS_INSTRUCTION_SIZE, exitRaw) &&
+                    IsUnconditionalExit(exitRaw))
+                {
+                    materializedAsCodePointer = true;
+                }
+            }
+        }
 
         if (!LooksLikeCallableEntry(sections,
                                     target,
@@ -1632,7 +1705,7 @@ namespace
                 std::memcpy(&raw, section.data + offset, sizeof(uint32_t));
 
                 const uint32_t op = OPCODE(raw);
-                if (op != OPCODE_JAL)
+                if (op != OPCODE_JAL && op != OPCODE_J)
                 {
                     continue;
                 }
@@ -1642,7 +1715,39 @@ namespace
                     ((pc + MIPS_INSTRUCTION_SIZE) & MIPS_JUMP_REGION_MASK) |
                     (index << MIPS_JUMP_TARGET_SHIFT);
 
-                if (FindCodeSectionByAddress(sections, target))
+                const ps2recomp::Section *targetSection = FindCodeSectionByAddress(sections, target);
+                if (!targetSection)
+                {
+                    continue;
+                }
+
+                if (op == OPCODE_JAL)
+                {
+                    starts.insert(target);
+                    continue;
+                }
+
+                // PocketR5900: a plain J (start-up code, tail calls) also reaches
+                // functions that nothing calls with JAL. Only take targets where a
+                // function can start without code falling into it: the start of
+                // a code section, right after an unconditional exit, or a
+                // stack-frame prologue. Jumps inside a function are left alone.
+                const uint32_t targetOffset = target - targetSection->address;
+                bool boundary = targetOffset == 0;
+                uint32_t targetRaw = 0;
+                if (!boundary && ReadSectionWord(*targetSection, targetOffset, targetRaw) &&
+                    IsStackFramePrologue(targetRaw))
+                {
+                    boundary = true;
+                }
+                uint32_t exitRaw = 0;
+                if (!boundary && targetOffset >= 2u * MIPS_INSTRUCTION_SIZE &&
+                    ReadSectionWord(*targetSection, targetOffset - 2u * MIPS_INSTRUCTION_SIZE, exitRaw) &&
+                    IsUnconditionalExit(exitRaw))
+                {
+                    boundary = true;
+                }
+                if (boundary)
                 {
                     starts.insert(target);
                 }
@@ -1952,9 +2057,114 @@ namespace ps2recomp
             }
 
             func.end = (nextStart > func.start) ? nextStart : (func.start + 4);
+
+            // PocketR5900: a scanned function must not run on into data placed in
+            // the code section; it would turn megabytes of data into one giant
+            // function. Cut it before the data and look for real code after it.
+            const uint32_t trimmed = trimTrailingData(func.start, func.end);
+            if (trimmed < func.end)
+            {
+                const uint32_t oldEnd = func.end;
+                func.end = trimmed;
+                const uint32_t resume = findNextPrologue(trimmed, oldEnd);
+                if (resume != 0 && !indexByStart.contains(resume))
+                {
+                    Function next{};
+                    next.name = MakeAutoFunctionName(resume);
+                    next.start = resume;
+                    next.end = oldEnd;
+                    indexByStart.emplace(resume, functions.size());
+                    functions.insert(functions.begin() + static_cast<std::ptrdiff_t>(index + 1), std::move(next));
+                    // Indices after this point moved; rebuild the map.
+                    indexByStart.clear();
+                    for (size_t i = 0; i < functions.size(); ++i)
+                    {
+                        indexByStart.emplace(functions[i].start, i);
+                    }
+                    // The inserted function keeps oldEnd until it is visited next,
+                    // where it is trimmed in turn.
+                    functions[index + 1].end = 0;
+                }
+            }
         }
 
         return functions;
+    }
+
+    uint32_t ElfParser::trimTrailingData(uint32_t start, uint32_t end) const
+    {
+        uint32_t lastExitEnd = 0;
+        for (uint32_t addr = start; addr + 4 <= end && addr >= start; addr += 4)
+        {
+            uint32_t word = 0;
+            try
+            {
+                word = readWord(addr);
+            }
+            catch (const std::exception &)
+            {
+                break;
+            }
+            if (IsClearlyNotR5900Code(word))
+            {
+                if (lastExitEnd > start)
+                {
+                    return std::min(lastExitEnd, addr);
+                }
+                return addr > start ? addr : start + 4;
+            }
+            if (IsUnconditionalExit(word))
+            {
+                lastExitEnd = addr + 8; // with the delay slot
+            }
+        }
+        return end;
+    }
+
+    uint32_t ElfParser::findNextPrologue(uint32_t from, uint32_t to) const
+    {
+        // Skip the data, then accept a prologue only once a run of words decodes
+        // cleanly from it, so a stray data word does not start a function.
+        for (uint32_t addr = (from + 3u) & ~3u; addr + 4 <= to && addr >= from; addr += 4)
+        {
+            uint32_t word = 0;
+            try
+            {
+                word = readWord(addr);
+            }
+            catch (const std::exception &)
+            {
+                return 0;
+            }
+            if (!IsStackFramePrologue(word))
+            {
+                continue;
+            }
+            bool clean = true;
+            for (uint32_t k = 1; k < 8 && addr + 4 * k + 4 <= to; ++k)
+            {
+                uint32_t next = 0;
+                try
+                {
+                    next = readWord(addr + 4 * k);
+                }
+                catch (const std::exception &)
+                {
+                    clean = false;
+                    break;
+                }
+                if (IsClearlyNotR5900Code(next))
+                {
+                    clean = false;
+                    break;
+                }
+            }
+            if (clean)
+            {
+                return addr;
+            }
+        }
+        return 0;
     }
 
     std::vector<Symbol> ElfParser::extractSymbols()

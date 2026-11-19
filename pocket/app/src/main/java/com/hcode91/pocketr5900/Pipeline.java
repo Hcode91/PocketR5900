@@ -33,6 +33,7 @@ final class Pipeline {
     /** -O1 converts much faster; -O2 makes a faster game. */
     static final String OPT_FAST_CONVERT = "-O1";
     static final String OPT_FAST_GAME = "-O2";
+    private static final long HUGE_SOURCE = 6L * 1024 * 1024;
 
     private final Game game;
     private final Toolchain tc;
@@ -244,7 +245,12 @@ final class Pipeline {
                     }
                     File o = objectFor(src);
                     File tmp = new File(o.getPath() + ".tmp");
-                    List<String> cmd = compileCommand(opt, pch);
+                    // A huge generated file (usually a function the recompiler could
+                    // not split) can take hours and gigabytes to optimise on a phone:
+                    // build those without optimisation, and without the header made
+                    // for the optimised build.
+                    boolean huge = src.length() > HUGE_SOURCE;
+                    List<String> cmd = huge ? compileCommand("-O0", null) : compileCommand(opt, pch);
                     cmd.add("-c");
                     cmd.add(src.getAbsolutePath());
                     cmd.add("-o");
