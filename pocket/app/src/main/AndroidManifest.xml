@@ -33,6 +33,8 @@
             android:name=".GameActivity"
             android:exported="false"
             android:process=":game"
+            android:taskAffinity="com.hcode91.pocketr5900.game"
+            android:excludeFromRecents="false"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|uiMode|navigation"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"

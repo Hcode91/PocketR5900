@@ -173,7 +173,13 @@ public class MainActivity extends Activity implements ConvertService.Watcher {
 
     private void refresh() {
         String active = ConvertService.activeGame;
-        if (active != null || !ConvertService.activeStatus.isEmpty()) {
+        if (active == null && !ConvertService.lastMessage.isEmpty()) {
+            activeLine.setText(ConvertService.lastMessage);
+            activeLine.setTextColor(ERROR);
+            activeLine.setVisibility(View.VISIBLE);
+            activeBar.setVisibility(View.GONE);
+        } else if (active != null) {
+            activeLine.setTextColor(MUTED);
             activeLine.setText(ConvertService.activeStatus);
             activeLine.setVisibility(View.VISIBLE);
             float p = ConvertService.activeProgress;
@@ -248,9 +254,7 @@ public class MainActivity extends Activity implements ConvertService.Watcher {
 
         if (g.ready()) {
             Button play = button("Play", true);
-            play.setOnClickListener(v -> startActivity(new Intent(this, GameActivity.class)
-                    .putExtra(GameActivity.EXTRA_GAME, g.id)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_MULTIPLE_TASK)));
+            play.setOnClickListener(v -> play(g));
             row.addView(play);
             Button export = button("Export as APK", false);
             export.setOnClickListener(v -> exportGame(g));
@@ -307,6 +311,29 @@ public class MainActivity extends Activity implements ConvertService.Watcher {
             row.addView(delete);
         }
         return card;
+    }
+
+    /** Starts a game in a fresh game process (a library cannot be unloaded, so an old one must go). */
+    private void play(Game g) {
+        android.app.ActivityManager am = getSystemService(android.app.ActivityManager.class);
+        List<android.app.ActivityManager.RunningAppProcessInfo> procs = am.getRunningAppProcesses();
+        boolean killed = false;
+        if (procs != null) {
+            for (android.app.ActivityManager.RunningAppProcessInfo p : procs) {
+                if (p.processName.equals(getPackageName() + ":game")) {
+                    android.os.Process.killProcess(p.pid);
+                    killed = true;
+                }
+            }
+        }
+        Intent intent = new Intent(this, GameActivity.class)
+                .putExtra(GameActivity.EXTRA_GAME, g.id)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        if (killed) {
+            list.postDelayed(() -> startActivity(intent), 400);
+        } else {
+            startActivity(intent);
+        }
     }
 
     private void exportGame(Game g) {

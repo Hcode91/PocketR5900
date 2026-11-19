@@ -53,6 +53,8 @@ public class ConvertService extends Service {
     static volatile String activeGame;
     static volatile String activeStatus = "";
     static volatile float activeProgress = -1;
+    /** The last problem that is not tied to one game (e.g. a bad pick), shown until the next job. */
+    static volatile String lastMessage = "";
     private static Watcher watcher;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
@@ -104,6 +106,7 @@ public class ConvertService extends Service {
             return START_NOT_STICKY;
         }
         if (intent != null) {
+            lastMessage = "";
             queue.add(intent);
         }
         if (worker == null || !worker.isAlive()) {
@@ -219,7 +222,7 @@ public class ConvertService extends Service {
             String msg = e.getMessage() != null ? e.getMessage() : e.toString();
             android.util.Log.e("PocketR5900", "export failed", e);
             finishedNotification("Export failed: " + msg);
-            activeStatus = "Export failed: " + msg;
+            lastMessage = "Export failed: " + msg;
         } finally {
             activeGame = null;
             notifyWatcher();
@@ -297,6 +300,19 @@ public class ConvertService extends Service {
         }
 
         String name = names.get(main);
+        long need = querySize(cr, uris.get(main));
+        File root = Game.gamesRoot(this);
+        //noinspection ResultOfMethodCallIgnored
+        root.mkdirs();
+        long free = new android.os.StatFs(root.getAbsolutePath()).getAvailableBytes();
+        // The copy, the ISO, the extracted files and the build all need room.
+        if (need > 0 && free < need * 3 + 1024L * 1024 * 1024) {
+            String msg = String.format(Locale.US, "Not enough free space: about %.1f GB is needed and %.1f GB is free.",
+                    (need * 3 + 1024L * 1024 * 1024) / 1073741824.0, free / 1073741824.0);
+            finishedNotification(msg);
+            showError(msg);
+            return null;
+        }
         String title = name.replaceAll("\\.[A-Za-z0-9]{1,4}$", "");
         Game g = Game.create(this, title);
         activeGame = g.id;
@@ -399,7 +415,7 @@ public class ConvertService extends Service {
     }
 
     private void showError(String msg) {
-        activeStatus = msg;
+        lastMessage = msg;
         notifyWatcher();
     }
 
