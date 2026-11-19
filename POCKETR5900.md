@@ -31,6 +31,15 @@ Licence: GPL-3.0, same as upstream.
 
 Each game has a **Convert log** and, once played, a **Game log** you can share.
 
+## Converting on a Windows PC (PocketR5900-PC)
+
+The slow part, compiling, can be done on a Windows PC instead (much faster with
+more cores). Download **PocketR5900-PC** from the **PocketR5900 - PC converter**
+workflow, unzip it, run `PocketR5900-PC.exe` and pick your dump. It writes one
+`.pr5900` file (the compiled game library, plus the disc unless you untick it).
+Open that file with **Add a game** on the phone and it is ready to play or export.
+See `pocket/pc/README.md`.
+
 ## How it is built
 
 `pocket-app.yml` builds everything into one APK:
@@ -43,6 +52,11 @@ Each game has a **Convert log** and, once played, a **Game log** you can share.
   into `sdk.zip`.
 - `pocket/player`: the template every exported game APK is made from.
 - `pocket/app`: the app.
+
+`pocket-pc.yml` builds the Windows converter: the same `sdk.zip`, the analyzer and
+recompiler built with MSVC, and `pocket/pc/pocketr5900_pc.py` packed with
+PyInstaller. On the PC it compiles with Google's Android NDK, downloaded on first
+use.
 
 Runtime changes for PocketR5900 (all opt-in through environment variables set by
 the app): `POCKETR5900_BOOT_ELF`, `POCKETR5900_CD_IMAGE`, `POCKETR5900_LOG_FILE`.
@@ -58,6 +72,9 @@ the app): `POCKETR5900_BOOT_ELF`, `POCKETR5900_CD_IMAGE`, `POCKETR5900_LOG_FILE`
 - clang and lld built as ARM64 Android programs (run under qemu): built the
   precompiled header, compiled the biggest generated files and linked a working
   `libgame.so` with the app's exact commands.
+- PocketR5900-PC (Linux run of the same script with the NDK) converted a test
+  `.bin`/`.cue` into a `.pr5900`, carries on after a stop, and the app's import of
+  it gives the same library and disc.
 - Exported APKs pass `apksigner verify` (v3) and `zipalign -c`, with the new
   package name and title.
 

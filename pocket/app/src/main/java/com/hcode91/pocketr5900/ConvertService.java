@@ -262,6 +262,12 @@ public class ConvertService extends Service {
             }
         }
         for (int i = 0; i < uris.size() && main < 0; i++) {
+            if (names.get(i).toLowerCase(Locale.US).endsWith(".pr5900")) {
+                main = i;
+                kind = "package";
+            }
+        }
+        for (int i = 0; i < uris.size() && main < 0; i++) {
             String n = names.get(i);
             String lower = n.toLowerCase(Locale.US);
             if (cueBin != null && n.equalsIgnoreCase(cueBin)) {
@@ -293,7 +299,7 @@ public class ConvertService extends Service {
         if (main < 0) {
             String msg = cueBin != null
                     ? "Pick the .bin file (" + cueBin + ") as well as the .cue."
-                    : "Pick the game's .bin, .iso or ELF file.";
+                    : "Pick the game's .bin, .iso, ELF or .pr5900 file.";
             finishedNotification(msg);
             showError(msg);
             return null;
@@ -337,7 +343,13 @@ public class ConvertService extends Service {
             }
         }
         if (kind.equals("unknown")) {
-            kind = Disc.isElf(dst) ? "elf" : "disc";
+            kind = Disc.isElf(dst) ? "elf" : (PcPackage.isPackage(dst) ? "package" : "disc");
+        }
+        if (kind.equals("package")) {
+            String packaged = PcPackage.title(dst);
+            if (packaged != null && !packaged.isEmpty()) {
+                g.props.setProperty("title", packaged);
+            }
         }
         g.props.setProperty("kind", kind);
         g.props.setProperty("sourceName", dst.getName());

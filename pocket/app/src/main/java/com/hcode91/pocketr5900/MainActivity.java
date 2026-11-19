@@ -196,7 +196,7 @@ public class MainActivity extends Activity implements ConvertService.Watcher {
         list.removeAllViews();
         List<Game> games = Game.all(this);
         if (games.isEmpty()) {
-            TextView empty = text("No games yet.\n\nTap \"Add a game\" and pick your own dump: a .bin (pick its .cue too), an .iso, or a PS2 ELF.", 15, MUTED);
+            TextView empty = text("No games yet.\n\nTap \"Add a game\" and pick your own dump: a .bin (pick its .cue too), an .iso, a PS2 ELF, or a .pr5900 file made by PocketR5900-PC.", 15, MUTED);
             empty.setPadding(0, dp(24), 0, 0);
             list.addView(empty);
             return;

@@ -62,6 +62,14 @@ final class Pipeline {
                 if (done == null) {
                     throw new IOException("This game was not imported properly. Delete it and add it again.");
                 }
+                if ("package".equals(game.props.getProperty("kind")) && done != Game.Step.READY) {
+                    // Converted on a PC: unpack it and it is ready to play.
+                    PcPackage.unpack(context, game, this::log, this::progress);
+                    game.props.setProperty("step", Game.Step.READY.name());
+                    game.props.remove("error");
+                    game.save();
+                    done = Game.Step.READY;
+                }
                 while (done != Game.Step.READY) {
                     Game.Step next = done.next();
                     switch (next) {
@@ -450,7 +458,7 @@ final class Pipeline {
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
-    private synchronized void log(String line) {
+    synchronized void log(String line) {
         if (log != null) {
             log.println(line);
             log.flush();
@@ -475,7 +483,7 @@ final class Pipeline {
 
     private long lastProgress;
 
-    private void progress(String what, long done, long total) throws IOException {
+    void progress(String what, long done, long total) throws IOException {
         if (tc.isCancelled()) {
             throw new Toolchain.Cancelled();
         }
