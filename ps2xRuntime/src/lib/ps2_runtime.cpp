@@ -14,6 +14,7 @@
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <fstream>
@@ -1063,6 +1064,13 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
         paths.hostRoot = paths.elfDirectory;
         paths.cdRoot = paths.elfDirectory;
         paths.mcRoot = paths.elfDirectory / "mc0";
+    }
+
+    // PocketR5900: the app passes the disc image it made (2048-byte sectors) so
+    // sector reads by LBN work as well as file reads from the extracted disc.
+    if (const char *pocketCdImage = std::getenv("POCKETR5900_CD_IMAGE"); pocketCdImage && pocketCdImage[0] != '\0')
+    {
+        paths.cdImage = std::filesystem::path(pocketCdImage);
     }
 
     setIoPaths(paths);

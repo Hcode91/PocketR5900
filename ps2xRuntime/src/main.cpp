@@ -147,6 +147,12 @@ namespace
             std::cout << "Using argv boot path" << std::endl;
             return std::filesystem::path(argv[1]);
         }
+        // PocketR5900: the app sets the boot ELF of the game it launches.
+        if (const char *pocketBoot = std::getenv("POCKETR5900_BOOT_ELF"); pocketBoot && pocketBoot[0] != '\0')
+        {
+            std::cout << "Using PocketR5900 boot path" << std::endl;
+            return std::filesystem::path(pocketBoot);
+        }
 #if defined(PS2X_DEFAULT_BOOT_ELF)
         std::cout << "Using default boot file" << std::endl;
         const std::filesystem::path configuredPath = std::filesystem::path(PS2X_DEFAULT_BOOT_ELF);
@@ -167,7 +173,18 @@ namespace
 int main(int argc, char *argv[])
 {
 #if defined(__ANDROID__)
-    redirectStdioToLogcat();
+    // PocketR5900: write the game's output to a file the app can show, instead of logcat.
+    if (const char *pocketLog = std::getenv("POCKETR5900_LOG_FILE"); pocketLog && pocketLog[0] != '\0' &&
+        std::freopen(pocketLog, "w", stdout) != nullptr)
+    {
+        dup2(fileno(stdout), STDERR_FILENO);
+        setvbuf(stdout, nullptr, _IOLBF, 0);
+        setvbuf(stderr, nullptr, _IONBF, 0);
+    }
+    else
+    {
+        redirectStdioToLogcat();
+    }
 #endif
     setupTerminateLogger();
 

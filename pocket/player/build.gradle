@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The template every exported game APK is made from. PocketR5900 rewrites its
+// package name and label, adds the game, and signs it on the phone. The
+// placeholders below are fixed-length so they can be replaced in place.
+android {
+    namespace 'com.hcode91.pocketr5900.player'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.hcode91.pocketr5900.game.xxxxxxxxxxxxxxxxxxxxxxxx'
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    sourceSets {
+        main.java.srcDirs += '../shared/java'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+}

@@ -1,0 +1,10 @@
+.gradle/
+build/
+app/build/
+app/.cxx/
+local.properties
+app/src/main/jniLibs/
+app/src/main/assets/sdk.zip
+app/src/main/assets/sdk.version
+app/src/main/assets/player-template.apk
+player/build/

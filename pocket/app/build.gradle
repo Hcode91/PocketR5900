@@ -1,0 +1,87 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.hcode91.pocketr5900'
+    compileSdk 35
+    ndkVersion '28.2.13676358'
+
+    defaultConfig {
+        applicationId 'com.hcode91.pocketr5900'
+        minSdk 28
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=none'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+        }
+    }
+
+    sourceSets {
+        main.java.srcDirs += '../shared/java'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // The bundled analyzer, recompiler, clang and lld are programs, not libraries.
+    // They are shipped as lib*.so so Android extracts them to the native library
+    // folder, the only place an app may run programs from. They must stay
+    // extracted (legacy packaging) and must not be stripped again.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += ['**/libps2analyzer.so', '**/libps2recomp.so', '**/libclang.so', '**/liblld.so']
+        }
+    }
+
+    // sdk.zip is already compressed and is large; store it as is.
+    androidResources {
+        noCompress += ['zip']
+    }
+
+    // Builds are signed with a fixed key, so a new build installs over the old one
+    // and keeps your converted games. Set the POCKET_* secrets to use your own key.
+    signingConfigs {
+        pocket {
+            def ks = System.getenv('POCKET_KEYSTORE')
+            if (ks != null && new File(ks).exists()) {
+                storeFile file(ks)
+                storePassword System.getenv('POCKET_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('POCKET_KEY_ALIAS')
+                keyPassword System.getenv('POCKET_KEY_PASSWORD')
+            } else {
+                storeFile rootProject.file('pocket-ci.keystore')
+                storePassword 'pocketr5900'
+                keyAlias 'pocketr5900'
+                keyPassword 'pocketr5900'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.pocket
+        }
+    }
+}
+
+dependencies {
+    // Signs exported game APKs on the phone.
+    implementation 'com.android.tools.build:apksig:8.7.3'
+}

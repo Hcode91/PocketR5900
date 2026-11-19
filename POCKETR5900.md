@@ -19,18 +19,44 @@ Licence: GPL-3.0, same as upstream.
 5. **Runner** - the compiled game is loaded by the app; later, packaged as its own
    signed APK on the phone.
 
-## Status
+## Using it
 
-- [x] Analyzer and recompiler build as Android ARM64 programs
-  (`-DPS2X_ANDROID_TOOLS=ON`, CI: `pocket-android-tools.yml`).
-- [x] Tested: ARM64 analyzer + recompiler (run under qemu) converted a PS2SDK
-  homebrew test ELF; the generated C++, linked with the runtime, printed the
-  correct results.
-- [ ] Disc reader (bin/cue, ISO)
-- [ ] App UI calling the tools
-- [ ] Bundled clang + on-phone compile of the generated code
-- [ ] Load and run the compiled game in the app
-- [ ] Per-game APK packaging and signing on the phone
+1. Install the APK from the **PocketR5900 - App** workflow.
+2. Tap **Add a game** and pick your own dump: a `.bin` (pick its `.cue` too), an
+   `.iso`, or a PS2 ELF.
+3. Choose **Faster conversion** (`-O1`) or **Faster game** (`-O2`).
+4. Leave it to run. It keeps going with the screen off, shows progress in a
+   notification, and can be stopped and continued later without starting over.
+5. Tap **Play**, or **Export as APK** to make the game its own installable app.
+
+Each game has a **Convert log** and, once played, a **Game log** you can share.
+
+## How it is built
+
+`pocket-app.yml` builds everything into one APK:
+
+- `pocket/scripts/build_toolchain.sh`: clang + lld (LLVM 19) as static Android
+  ARM64 programs. Slow the first time (1-3 hours), then cached.
+- The analyzer and recompiler as static Android ARM64 programs.
+- The PS2 runtime for Android (without LTO, so it can be linked on the phone),
+  packed with the Android sysroot and headers by `pocket/scripts/make_sdk_pack.sh`
+  into `sdk.zip`.
+- `pocket/player`: the template every exported game APK is made from.
+- `pocket/app`: the app.
+
+Runtime changes for PocketR5900 (all opt-in through environment variables set by
+the app): `POCKETR5900_BOOT_ELF`, `POCKETR5900_CD_IMAGE`, `POCKETR5900_LOG_FILE`.
+
+## Tested so far
+
+- Analyzer and recompiler as ARM64 programs (under qemu) on a PS2SDK homebrew ELF;
+  the generated C++ linked with the runtime printed the correct results.
+- Disc reader: raw MODE2/2352 `.bin` and `.iso` both extract identically to the
+  original files, and the boot ELF is found from `SYSTEM.CNF`.
+- The app's exact compile and link commands, with the SDK pack, build a working
+  `libgame.so` that exports `ANativeActivity_onCreate`.
+- Exported APKs pass `apksigner verify` (v3) and `zipalign -c`, with the new
+  package name and title.
 
 ## Note on retail games
 
