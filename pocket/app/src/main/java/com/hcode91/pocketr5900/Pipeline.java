@@ -314,7 +314,7 @@ final class Pipeline {
         File sdkLib = new File(tc.sdk, "lib");
         List<String> cmd = baseCommand();
         cmd.addAll(Arrays.asList(
-                "-shared", "-static-libstdc++",
+                "-shared", "-static-libstdc++", "-rtlib=compiler-rt", "-unwindlib=libunwind",
                 "-fuse-ld=lld", "--ld-path=" + tc.ldLld().getAbsolutePath(),
                 "-Wl,-soname,libgame.so", "-Wl,--build-id=sha1", "-Wl,--no-undefined",
                 "-Wl,--gc-sections", "-Wl,--undefined=ANativeActivity_onCreate",

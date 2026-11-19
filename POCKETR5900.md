@@ -55,6 +55,9 @@ the app): `POCKETR5900_BOOT_ELF`, `POCKETR5900_CD_IMAGE`, `POCKETR5900_LOG_FILE`
   original files, and the boot ELF is found from `SYSTEM.CNF`.
 - The app's exact compile and link commands, with the SDK pack, build a working
   `libgame.so` that exports `ANativeActivity_onCreate`.
+- clang and lld built as ARM64 Android programs (run under qemu): built the
+  precompiled header, compiled the biggest generated files and linked a working
+  `libgame.so` with the app's exact commands.
 - Exported APKs pass `apksigner verify` (v3) and `zipalign -c`, with the new
   package name and title.
 
