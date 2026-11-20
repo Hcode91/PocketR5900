@@ -1,0 +1,112 @@
+name: PocketR5900 - PC converter
+
+# Builds PocketR5900-PC for Windows: converts a PS2 game on a PC into a .pr5900
+# file for the PocketR5900 Android app.
+#   1. (Linux) the PS2 runtime for Android, packed with the Android sysroot (sdk.zip)
+#   2. (Windows) the analyzer and recompiler with MSVC, and the converter as an .exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, pocket/android-tools]
+    paths:
+      - "pocket/pc/**"
+      - "pocket/scripts/make_sdk_pack.sh"
+      - "ps2xRecomp/**"
+      - "ps2xAnalyzer/**"
+      - "ps2xRuntime/**"
+      - "ps2xIOP/**"
+      - ".github/workflows/pocket-pc.yml"
+
+env:
+  NDK_VERSION: "28.2.13676358"
+
+jobs:
+  sdk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build zip
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}" > /dev/null
+          echo "NDK=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build the PS2 runtime for Android
+        run: |
+          cmake -S . -B build-rt -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_static -DANDROID_CPP_FEATURES="rtti exceptions" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPS2X_DISABLE_IPO=ON -DPS2X_ENABLE_SCCACHE=OFF \
+            -DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF -DPS2X_ENABLE_RUNNER_PCH=OFF
+          cmake --build build-rt --target ps2EntryRunner
+
+      # On the PC the NDK's own clang is used, so its own headers fill the
+      # clang-resource slot of the pack.
+      - name: Pack the compiler files
+        run: |
+          mkdir -p ndk-resource/resource
+          cp -r "$NDK"/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/include ndk-resource/resource/include
+          pocket/scripts/make_sdk_pack.sh "$NDK" build-rt . ndk-resource out/sdk.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pc-sdk
+          path: out/
+
+  windows:
+    needs: sdk
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+      - name: Build the analyzer and recompiler
+        shell: cmd
+        run: |
+          cmake -B build -DPS2X_BUILD_RUNTIME=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF
+          cmake --build build --config Release --target ps2_analyzer ps2_recomp
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build PocketR5900-PC.exe
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pyinstaller
+          pyinstaller --onefile --windowed --name PocketR5900-PC pocket/pc/pocketr5900_pc.py
+          pyinstaller --onefile --console --name PocketR5900-PC-cli pocket/pc/pocketr5900_pc.py
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pc-sdk
+          path: sdk
+
+      - name: Put the download together
+        shell: pwsh
+        run: |
+          $d = "PocketR5900-PC"
+          New-Item -ItemType Directory -Force "$d/tools" | Out-Null
+          Copy-Item dist/PocketR5900-PC.exe, dist/PocketR5900-PC-cli.exe $d/
+          Copy-Item build/ps2xAnalyzer/Release/ps2_analyzer.exe "$d/tools/"
+          Copy-Item build/ps2xRecomp/Release/ps2_recomp.exe "$d/tools/"
+          Copy-Item sdk/sdk.zip, sdk/sdk.version $d/
+          Copy-Item pocket/pc/README.md "$d/README.txt"
+          Get-ChildItem -Recurse $d | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketR5900-PC
+          path: PocketR5900-PC/

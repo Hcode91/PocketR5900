@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Replaced with the game's title when a game is exported (exactly 48 characters). -->
+    <string name="app_name" translatable="false">@PR5900_TITLE_PLACEHOLDER_000000000000000000000@</string>
+</resources>

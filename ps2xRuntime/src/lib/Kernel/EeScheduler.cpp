@@ -1869,6 +1869,9 @@ void EeScheduler::processEvent(const EeEvent &event)
     case EeEventType::VBlankStart:
         ++m_vsyncTick;
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
+        // VSINT event flag (CSR bit 3): set at every vertical blank, cleared by the
+        // program writing 1 to it. Libraries such as gsKit poll it to wait for vsync.
+        m_runtime.memory().gs().csr.fetch_or(0x8ull, std::memory_order_acq_rel);
         if ((m_vsyncTick & 1u) != 0u)
         {
             m_runtime.memory().gs().csr.fetch_or(0x2000ull, std::memory_order_acq_rel);

@@ -1,0 +1,130 @@
+name: PocketR5900 - App
+
+# Builds the complete PocketR5900 APK:
+#   1. clang + lld for Android (built once, then cached; the first run takes 1-3 hours)
+#   2. the analyzer and recompiler for Android
+#   3. the PS2 runtime as Android libraries, packed with the Android sysroot (sdk.zip)
+#   4. the app, with all of the above inside
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pocket/**"
+      - "ps2xRecomp/**"
+      - "ps2xAnalyzer/**"
+      - "ps2xRuntime/**"
+      - "ps2xIOP/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/pocket-app.yml"
+
+env:
+  NDK_VERSION: "28.2.13676358"
+  LLVM_VERSION: "19.1.7"
+
+jobs:
+  app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build zip
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;${NDK_VERSION}" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          echo "NDK=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ---------------------------------------------------------------- 1. clang + lld
+      - name: Restore the on-phone compiler
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: toolchain-out
+          key: pocket-toolchain-llvm${{ env.LLVM_VERSION }}-ndk${{ env.NDK_VERSION }}-${{ hashFiles('pocket/scripts/build_toolchain.sh') }}
+
+      - name: Build the on-phone compiler (first run only, slow)
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/llvm-project-${LLVM_VERSION}.src.tar.xz"
+          tar xJf llvm.tar.xz && rm llvm.tar.xz
+          BUILD_DIR="$PWD/toolchain-build" pocket/scripts/build_toolchain.sh "llvm-project-${LLVM_VERSION}.src" "$NDK" toolchain-out
+          rm -rf toolchain-build "llvm-project-${LLVM_VERSION}.src"
+
+      # Saved straight away, so a later failure never means building it again.
+      - name: Save the on-phone compiler
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: toolchain-out
+          key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
+
+      # ------------------------------------------------- 2. analyzer and recompiler
+      - name: Build the analyzer and recompiler for Android
+        run: |
+          cmake -S . -B build-tools -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_static -DANDROID_CPP_FEATURES="rtti exceptions" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static" \
+            -DCMAKE_BUILD_TYPE=Release -DPS2X_ANDROID_TOOLS=ON
+          cmake --build build-tools
+
+      # -------------------------------------------------------- 3. runtime + sdk.zip
+      - name: Build the PS2 runtime for Android
+        run: |
+          cmake -S . -B build-rt -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_static -DANDROID_CPP_FEATURES="rtti exceptions" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPS2X_DISABLE_IPO=ON -DPS2X_ENABLE_SCCACHE=OFF \
+            -DPS2X_ENABLE_RUNNER_UNITY_BUILD=OFF -DPS2X_ENABLE_RUNNER_PCH=OFF
+          cmake --build build-rt --target ps2EntryRunner
+
+      - name: Pack the compiler files
+        run: pocket/scripts/make_sdk_pack.sh "$NDK" build-rt . toolchain-out pocket/app/src/main/assets/sdk.zip
+
+      # ------------------------------------------------------------------ 4. the app
+      - name: Put the programs into the app
+        run: |
+          J=pocket/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$J"
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          cp build-tools/ps2xAnalyzer/ps2_analyzer "$J/libps2analyzer.so"
+          cp build-tools/ps2xRecomp/ps2_recomp "$J/libps2recomp.so"
+          "$STRIP" "$J/libps2analyzer.so" "$J/libps2recomp.so"
+          cp toolchain-out/clang "$J/libclang.so"
+          cp toolchain-out/lld "$J/liblld.so"
+          ls -l "$J" pocket/app/src/main/assets
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build the APK
+        working-directory: pocket
+        run: |
+          # The player template goes inside the app; exported games are made from it.
+          gradle --no-daemon :player:assembleRelease
+          cp player/build/outputs/apk/release/player-release.apk app/src/main/assets/player-template.apk
+          gradle --no-daemon :app:assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PocketR5900-apk
+          path: pocket/app/build/outputs/apk/release/app-release.apk

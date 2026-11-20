@@ -34,7 +34,11 @@ function(EnableFastReleaseMode TargetName)
         endif()
     endif()
 
-    if(IPO_SUPPORTED)
+    # PocketR5900: the runtime is shipped as static libraries and linked into each
+    # game on the phone, so it must be plain machine code, not LTO bitcode.
+    if(PS2X_DISABLE_IPO)
+        message("> IPO disabled for: ${TargetName}")
+    elseif(IPO_SUPPORTED)
         set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     else()
         message(WARNING "Interprocedural optimization not supported: ${ipo_error}")

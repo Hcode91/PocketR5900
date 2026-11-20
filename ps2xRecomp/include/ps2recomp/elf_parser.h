@@ -34,6 +34,10 @@ namespace ps2recomp
                 // Helper methods
                 bool isValidAddress(uint32_t address) const;
                 uint32_t readWord(uint32_t address) const;
+                // End of a scanned function, cut before data that is not R5900 code.
+                uint32_t trimTrailingData(uint32_t start, uint32_t end) const;
+                // First likely function start (a stack-frame prologue) in [from, to), or 0.
+                uint32_t findNextPrologue(uint32_t from, uint32_t to) const;
                 uint8_t *getSectionData(const std::string &sectionName) const;
                 uint32_t getSectionAddress(const std::string &sectionName) const;
                 uint32_t getSectionSize(const std::string &sectionName) const;
