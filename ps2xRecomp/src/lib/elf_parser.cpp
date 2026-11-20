@@ -1478,6 +1478,408 @@ namespace
         return name == ".ctors" || name == ".dtors" || name == ".init_array" || name == ".fini_array";
     }
 
+    // PocketR5900: true when a function can start at `target` without code from
+    // the function before falling into it: the start of a code section, a
+    // stack-frame prologue, or right after an unconditional exit and its delay slot.
+    bool IsFunctionBoundary(const std::vector<ps2recomp::Section> &sections, uint32_t target, bool afterReturnOnly = false)
+    {
+        if ((target % MIPS_INSTRUCTION_SIZE) != 0)
+        {
+            return false;
+        }
+        const ps2recomp::Section *section = FindCodeSectionByAddress(sections, target);
+        if (!section || !section->data)
+        {
+            return false;
+        }
+        const uint32_t offset = target - section->address;
+        if (offset == 0)
+        {
+            return true;
+        }
+        uint32_t raw = 0;
+        if (!ReadSectionWord(*section, offset, raw) || IsClearlyNotR5900Code(raw))
+        {
+            return false;
+        }
+        if (IsStackFramePrologue(raw))
+        {
+            return true;
+        }
+        // The exit and its delay slot may be followed by up to three nops of
+        // alignment padding before the next function.
+        for (uint32_t padding = 0; padding <= 3u; ++padding)
+        {
+            const uint32_t exitOffset = (2u + padding) * MIPS_INSTRUCTION_SIZE;
+            if (offset < exitOffset)
+            {
+                break;
+            }
+            if (padding > 0)
+            {
+                uint32_t pad = 1;
+                if (!ReadSectionWord(*section, offset - padding * MIPS_INSTRUCTION_SIZE, pad) || pad != 0)
+                {
+                    break;
+                }
+            }
+            uint32_t exitRaw = 0;
+            if (ReadSectionWord(*section, offset - exitOffset, exitRaw) &&
+                (afterReturnOnly ? (OPCODE(exitRaw) == OPCODE_SPECIAL && FUNCTION(exitRaw) == SPECIAL_JR && RS(exitRaw) == GPR_RA)
+                                 : IsUnconditionalExit(exitRaw)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // PocketR5900: ELFs without section headers are one LOAD block that is both
+    // code and data, so their C++ vtables and callback tables sit inside a "code"
+    // section and ScanDataFunctionPointerTables never sees them. Look for runs of
+    // words there that all point at function boundaries: two or more within 16
+    // bytes of each other, or one directly after the two zero words a vtable
+    // starts with. Instructions almost never form such runs by chance.
+    bool InRanges(const std::vector<std::pair<uint32_t, uint32_t>> &ranges, uint32_t address)
+    {
+        auto it = std::upper_bound(ranges.begin(), ranges.end(), std::make_pair(address, 0xFFFFFFFFu));
+        if (it == ranges.begin())
+        {
+            return false;
+        }
+        --it;
+        return address >= it->first && address < it->second;
+    }
+
+    // PocketR5900: finds switch jump tables from the code that reads them, so
+    // their entries (which point just past jumps, like real function starts)
+    // are not taken for function pointers. GCC emits, in some order:
+    //   sltiu  rN, rI, COUNT      (bounds check)
+    //   lui    rB, %hi(table)
+    //   addiu  rB, rB, %lo(table) (or the low part as the lw offset)
+    //   addu / lw rT, off(rB) / jr rT
+    std::vector<std::pair<uint32_t, uint32_t>> FindSwitchTables(const std::vector<ps2recomp::Section> &sections)
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> tables;
+        constexpr int kWindow = 16;
+        for (const auto &section : sections)
+        {
+            if (!section.isCode || !section.data || section.size < 8u * MIPS_INSTRUCTION_SIZE)
+            {
+                continue;
+            }
+            const uint32_t count = section.size / MIPS_INSTRUCTION_SIZE;
+            auto word = [&](uint32_t index)
+            {
+                uint32_t raw = 0;
+                ReadSectionWord(section, index * MIPS_INSTRUCTION_SIZE, raw);
+                return raw;
+            };
+            for (uint32_t j = 1; j < count; ++j)
+            {
+                const uint32_t jr = word(j);
+                if (OPCODE(jr) != OPCODE_SPECIAL || FUNCTION(jr) != SPECIAL_JR || RS(jr) == GPR_RA)
+                {
+                    continue;
+                }
+                const uint32_t targetReg = RS(jr);
+                const uint32_t first = j > static_cast<uint32_t>(kWindow) ? j - kWindow : 0u;
+
+                // The load that produced the jump target.
+                int32_t lwOffset = 0;
+                uint32_t lwBase = 0;
+                uint32_t lwIndex = 0;
+                bool haveLoad = false;
+                for (uint32_t i = j; i-- > first;)
+                {
+                    const uint32_t raw = word(i);
+                    if (OPCODE(raw) == OPCODE_LW && RT(raw) == targetReg)
+                    {
+                        lwOffset = SIMMEDIATE(raw);
+                        lwBase = RS(raw);
+                        lwIndex = i;
+                        haveLoad = true;
+                        break;
+                    }
+                }
+                if (!haveLoad)
+                {
+                    continue;
+                }
+
+                // Follow the load's base register back to the lui (and addiu/ori)
+                // that set the table address. The base may be the sum of the
+                // index and a register loaded long before (hoisted out of a loop).
+                auto addressIn = [&](uint32_t reg, uint32_t from, uint32_t &outAddress)
+                {
+                    constexpr uint32_t kTraceBack = 2048;
+                    const uint32_t stop = from > kTraceBack ? from - kTraceBack : 0u;
+                    uint32_t low = 0;
+                    bool haveLow = false;
+                    for (uint32_t i = from; i-- > stop;)
+                    {
+                        const uint32_t raw = word(i);
+                        if (!WritesGpr(raw, reg))
+                        {
+                            continue;
+                        }
+                        if (OPCODE(raw) == OPCODE_LUI && RT(raw) == reg)
+                        {
+                            outAddress = (static_cast<uint32_t>(IMMEDIATE(raw)) << 16) + (haveLow ? low : 0u);
+                            return true;
+                        }
+                        if (!haveLow && OPCODE(raw) == OPCODE_ADDIU && RT(raw) == reg && RS(raw) == reg)
+                        {
+                            low = static_cast<uint32_t>(SIMMEDIATE(raw));
+                            haveLow = true;
+                            continue;
+                        }
+                        if (!haveLow && OPCODE(raw) == OPCODE_ADDIU && RT(raw) == reg)
+                        {
+                            low = static_cast<uint32_t>(SIMMEDIATE(raw));
+                            haveLow = true;
+                            reg = RS(raw);
+                            continue;
+                        }
+                        return false;
+                    }
+                    return false;
+                };
+
+                std::vector<std::pair<uint32_t, uint32_t>> bases; // (register, search from)
+                bases.emplace_back(lwBase, lwIndex);
+                for (uint32_t i = lwIndex; i-- > first;)
+                {
+                    const uint32_t raw = word(i);
+                    if (!WritesGpr(raw, lwBase))
+                    {
+                        continue;
+                    }
+                    if (OPCODE(raw) == OPCODE_SPECIAL && (FUNCTION(raw) == SPECIAL_ADDU || FUNCTION(raw) == SPECIAL_DADDU))
+                    {
+                        bases.emplace_back(RS(raw), i);
+                        bases.emplace_back(RT(raw), i);
+                    }
+                    break;
+                }
+
+                uint32_t tableAddress = 0;
+                bool haveTable = false;
+                for (const auto &base : bases)
+                {
+                    uint32_t address = 0;
+                    if (base.first != 0 && addressIn(base.first, base.second, address))
+                    {
+                        address += static_cast<uint32_t>(lwOffset);
+                        if ((address % 4u) == 0 && FindSectionByAddress(sections, address))
+                        {
+                            tableAddress = address;
+                            haveTable = true;
+                            break;
+                        }
+                    }
+                }
+                if (!haveTable)
+                {
+                    continue;
+                }
+
+                // The case count from the bounds check, if there is one.
+                uint32_t cases = 0;
+                const uint32_t checkFirst = j > 32u ? j - 32u : 0u;
+                for (uint32_t i = j; i-- > checkFirst;)
+                {
+                    const uint32_t raw = word(i);
+                    if (OPCODE(raw) == OPCODE_SLTIU || OPCODE(raw) == OPCODE_SLTI)
+                    {
+                        cases = IMMEDIATE(raw);
+                        break;
+                    }
+                }
+
+                // Without a count, take entries while they point near the jump.
+                const uint32_t jrAddress = section.address + j * MIPS_INSTRUCTION_SIZE;
+                const ps2recomp::Section *tableSection = FindSectionByAddress(sections, tableAddress);
+                uint32_t end = tableAddress;
+                for (uint32_t n = 0; n < 4096u; ++n)
+                {
+                    const uint32_t entryAddress = tableAddress + n * 4u;
+                    if (cases != 0 && n >= cases)
+                    {
+                        break;
+                    }
+                    uint32_t entry = 0;
+                    if (!tableSection->data || entryAddress + 4u > tableSection->address + tableSection->size ||
+                        !ReadSectionWord(*tableSection, entryAddress - tableSection->address, entry))
+                    {
+                        break;
+                    }
+                    const uint32_t distance = entry > jrAddress ? entry - jrAddress : jrAddress - entry;
+                    if (cases == 0 && ((entry % 4u) != 0 || distance > 0x10000u))
+                    {
+                        break;
+                    }
+                    end = entryAddress + 4u;
+                }
+                if (end > tableAddress)
+                {
+                    tables.emplace_back(tableAddress, end);
+                }
+            }
+        }
+        std::sort(tables.begin(), tables.end());
+        return tables;
+    }
+
+    void ScanCodeSectionPointerTables(const std::vector<ps2recomp::Section> &sections, std::unordered_set<uint32_t> &starts)
+    {
+        constexpr uint32_t kRunDistanceBytes = 16;
+        std::vector<std::pair<uint32_t, uint32_t>> switchTables = FindSwitchTables(sections);
+
+        // Tables whose code could not be traced: a run of code addresses that
+        // repeats a target (the "default" case of a sparse switch) is a switch
+        // table, not a vtable.
+        for (const auto &section : sections)
+        {
+            if (!section.isCode || !section.data || section.isBSS)
+            {
+                continue;
+            }
+            uint32_t runStart = 0;
+            std::unordered_set<uint32_t> seen;
+            bool repeats = false;
+            auto finishRun = [&](uint32_t runEnd)
+            {
+                if (repeats && runEnd - runStart >= 4u * sizeof(uint32_t))
+                {
+                    switchTables.emplace_back(section.address + runStart, section.address + runEnd);
+                }
+                seen.clear();
+                repeats = false;
+            };
+            for (uint32_t offset = 0; offset + 4u <= section.size; offset += 4u)
+            {
+                uint32_t value = 0;
+                const bool pointer = ReadSectionWord(section, offset, value) && value != 0 &&
+                                     (value % 4u) == 0 && FindCodeSectionByAddress(sections, value);
+                if (!pointer)
+                {
+                    finishRun(offset);
+                    runStart = offset + 4u;
+                    continue;
+                }
+                if (!seen.insert(value).second)
+                {
+                    repeats = true;
+                }
+            }
+            finishRun(section.size & ~3u);
+        }
+        std::sort(switchTables.begin(), switchTables.end());
+        for (const auto &section : sections)
+        {
+            if (!section.isCode || !section.data || section.isBSS || section.size < 3u * MIPS_INSTRUCTION_SIZE)
+            {
+                continue;
+            }
+
+            std::vector<std::pair<uint32_t, uint32_t>> pointers; // (offset, target)
+            for (uint32_t offset = 0; offset + MIPS_INSTRUCTION_SIZE <= section.size; offset += MIPS_INSTRUCTION_SIZE)
+            {
+                uint32_t target = 0;
+                if (InRanges(switchTables, section.address + offset))
+                {
+                    continue;
+                }
+                if (ReadSectionWord(section, offset, target) && target != 0 && IsFunctionBoundary(sections, target))
+                {
+                    pointers.emplace_back(offset, target);
+                }
+            }
+
+            // Vtables (two zero words, then the methods): a method may also
+            // follow a call that never returns, e.g. a function ending in a
+            // call to abort(), so take targets after a call there too.
+            auto followsCall = [&](uint32_t target)
+            {
+                const ps2recomp::Section *code = FindCodeSectionByAddress(sections, target);
+                if (!code || !code->data || (target % 4u) != 0)
+                {
+                    return false;
+                }
+                const uint32_t at = target - code->address;
+                for (uint32_t padding = 0; padding <= 3u; ++padding)
+                {
+                    const uint32_t back = (2u + padding) * 4u;
+                    if (at < back)
+                    {
+                        return false;
+                    }
+                    if (padding > 0)
+                    {
+                        uint32_t pad = 1;
+                        if (!ReadSectionWord(*code, at - padding * 4u, pad) || pad != 0)
+                        {
+                            return false;
+                        }
+                    }
+                    uint32_t call = 0;
+                    if (ReadSectionWord(*code, at - back, call) &&
+                        (OPCODE(call) == OPCODE_JAL ||
+                         (OPCODE(call) == OPCODE_SPECIAL && FUNCTION(call) == SPECIAL_JALR)))
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            for (uint32_t offset = 8u; offset + 4u <= section.size; offset += 4u)
+            {
+                uint32_t zero0 = 1;
+                uint32_t zero1 = 1;
+                if (!ReadSectionWord(section, offset - 8u, zero0) || !ReadSectionWord(section, offset - 4u, zero1) ||
+                    zero0 != 0 || zero1 != 0)
+                {
+                    continue;
+                }
+                for (uint32_t entry = offset, n = 0; entry + 4u <= section.size && n < 256u; entry += 4u, ++n)
+                {
+                    uint32_t target = 0;
+                    if (InRanges(switchTables, section.address + entry) ||
+                        !ReadSectionWord(section, entry, target) || target == 0 || (target % 4u) != 0 ||
+                        !FindCodeSectionByAddress(sections, target))
+                    {
+                        break;
+                    }
+                    if (IsFunctionBoundary(sections, target) || followsCall(target))
+                    {
+                        starts.insert(target);
+                    }
+                }
+            }
+
+            for (size_t i = 0; i < pointers.size(); ++i)
+            {
+                const uint32_t offset = pointers[i].first;
+                bool accept = (i > 0 && offset - pointers[i - 1].first <= kRunDistanceBytes) ||
+                              (i + 1 < pointers.size() && pointers[i + 1].first - offset <= kRunDistanceBytes);
+                uint32_t zero0 = 1;
+                uint32_t zero1 = 1;
+                if (!accept && offset >= 8u &&
+                    ReadSectionWord(section, offset - 8u, zero0) &&
+                    ReadSectionWord(section, offset - 4u, zero1) &&
+                    zero0 == 0 && zero1 == 0)
+                {
+                    accept = true;
+                }
+                if (accept)
+                {
+                    starts.insert(pointers[i].second);
+                }
+            }
+        }
+    }
+
     void ScanDataFunctionPointerTables(const std::vector<ps2recomp::Section> &sections, std::unordered_set<uint32_t> &starts)
     {
         struct PointerCandidate
@@ -1756,6 +2158,7 @@ namespace
 
         ScanMaterializedCodeAddresses(sections, starts);
         ScanDataFunctionPointerTables(sections, starts);
+        ScanCodeSectionPointerTables(sections, starts);
         ScanAdjacentLeafThunkRuns(sections, starts);
 
         std::vector<uint32_t> sortedStarts(starts.begin(), starts.end());
